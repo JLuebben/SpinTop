@@ -1,10 +1,15 @@
-import numpy as np
 import os
-import matplotlib
-from matplotlib import pyplot as plt
-import seaborn as sb
-from match import get_transform, quaternion_to_euler_angles,\
-    find_orthonormals, quaternion_twist, quaternion_to_axis_angle
+import argparse
+try:
+    from matplotlib import pyplot as plt
+except ImportError:
+    PLOTAVAILABLE = False
+else:
+    PLOTAVAILABLE = True
+# try:
+#     import seaborn as sb
+# except ImportError:
+#     PLOTAVAILABLE = False
 
 
 reportString = '''
@@ -34,10 +39,9 @@ reportString = '''
 \\setlength{{\\footskip}}{{3cm}}
 \\maketitle
 
-\\section{{Completeness and $I/\\sigma$}}
+\\section{{$I/\\sigma$}}
 
-{completeness}
-{iOverSigma}
+{iover}
 
 
 
@@ -72,16 +76,15 @@ class RangeReport(object):
     def setBaseValue(self, value):
         self.startingValue = value
 
-    def report(self):
-        string = reportString.format(completeness='\\includegraphics[width=1\\textwidth]{{{}}}\n'.format(self.comp),
-                                     iOverSigma='\\includegraphics[width=1\\textwidth]{{{}}}\n'.format(self.iOverSigma),
+    def report(self, path):
+        string = reportString.format(iover='\\includegraphics[width=1\\textwidth]{{{}}}\n'.format(self.iOverSigma),
                                      fits='\n'.join(['\\includegraphics[width=.5\\textwidth]{{{{{}}}.eps}}'.format(fit[:-4]) for fit in self.fits]),
                                      title='{} at Oscillation Range {:6.4f}'.format(self.dataName, self.startingValue))
-        with open('./plots/report.tex', 'w') as fp:
+        with open(os.path.join(path, 'report.tex'), 'w') as fp:
             fp.write(string)
 
 class XDSIntegrateLog(object):
-    def __init__(self, fileName, overrideTitle=None, savePlotsTo=None, fileNameCallback=None):
+    def __init__(self, fileName, overrideTitle=None, savePlotsTo=None, fileNameCallback=None, savePlotsAs=None):
         self.fileName = fileName
         self.range = None
         self.imageCacheSize = None
@@ -93,6 +96,7 @@ class XDSIntegrateLog(object):
         self.imagesInBlock = []
         self.overrideTitle = overrideTitle
         self.savePlotsTo = savePlotsTo
+        self.savePlotsAs = savePlotsAs
         self.filNameCallback = fileNameCallback
 
     def read(self):
@@ -137,7 +141,7 @@ class XDSIntegrateLog(object):
             block = XDSIntegrateBlock(currentBlock, a, b, c, self.rotationAxis)
             self.blocks.append(block)
 
-
+    def fitOscillationCorrection(self):
         onorm, _ = find_orthonormals(self.rotationAxis)
 
         twists = []
@@ -151,29 +155,55 @@ class XDSIntegrateLog(object):
             frameNumber += self.imagesInBlock[i+1]
             frameNumbers.append(frameNumber)
             angles.append(self.oscillationRange*frameNumber)
-
         A = np.vstack([angles, np.ones(len(angles))]).T
         m, b = np.linalg.lstsq(A, twists, rcond=None)[0]
         x = angles
         y = [i*m+b for i in x]
-        sb.set_style("darkgrid")
-        plt.plot(angles, twists, label='Offset About Rotation Axis')
         m = m * self.oscillationRange
-        plt.plot(x, y, label='recommended correction = {:7.5f} deg/frame'.format(m))
-        plt.plot(x, [t-i for t,i in zip(twists, y)], label='expected offset after correction')
+        correctedTwists = [t-i for t,i in zip(twists, y)]
+
+        self.plotData = {'angles': angles,
+                         'twists': twists,
+                         'correctionFunction': y,
+                         'correctedTwists': correctedTwists,
+                         'correction': m}
+        return m
+
+    def plot(self, show=False):
+        if not self.plotData:
+            raise ValueError('Plot data is None. Call "fitOscillationCorrection()" before calling "plot".')
+        angles, twists, correctionFunction, correctedTwists = self.plotData['angles'], self.plotData['twists'], self.plotData['correctionFunction'], self.plotData['correctedTwists']
+        m = self.plotData['correction']
+        # sb.set_style("darkgrid")
+        plt.plot(angles, twists, label='Offset About Rotation Axis')
+        plt.plot(angles, correctionFunction, label='recommended correction = {:+6.4f} deg/frame --> {:6.4f}'.format(m, self.oscillationRange+m))
+        plt.plot(angles, correctedTwists, label='expected offset after correction')
         plt.legend(loc=2)
         plt.title('/'.join(self.fileName.split('/')[-5:-1]) if not self.overrideTitle else self.overrideTitle)
         plt.xlabel('Rotation Angle in degrees')
         plt.ylabel('Angular Offset in degrees')
 
-        print('Old OSCILLATION_RANGE= {:9.7f}'.format(self.oscillationRange))
-        print('Use OSCILLATION_RANGE= {:9.7f}'.format(self.oscillationRange+m))
+        # print('Old OSCILLATION_RANGE= {:6.4f}'.format(self.oscillationRange))
+        # print('Use OSCILLATION_RANGE= {:6.4f}'.format(self.oscillationRange+m))
         if self.savePlotsTo:
             plt.gcf()
             saveName = os.path.join(self.savePlotsTo ,'fit_{:6.4f}.eps'.format(self.oscillationRange))
             plt.savefig(saveName)
             self.filNameCallback('fit_{:6.4f}.eps'.format(self.oscillationRange))
-        plt.show()
+
+        if self.savePlotsAs:
+            plt.savefig(self.savePlotsAs)
+        if show:
+            plt.show()
+        plt.clf()
+
+    def writeRawData(self, fileName):
+        if not self.plotData:
+            raise ValueError('Plot data is None. Call "fitOscillationCorrection()" before calling "writeRawData".')
+        with open(fileName, 'w') as fp:
+            fp.write('Angle, Twist, CorrectedTwist')
+            for angle, twist, corrected in zip(self.plotData['angles'], self.plotData['twists'], self.plotData['correctedTwists']):
+                fp.write('{},{},{}'.format(angle, twist, corrected))
 
 
 
@@ -198,7 +228,7 @@ class XDSIntegrateBlock(object):
 
 
 
-def test(baseDir):
+def getCorrection(baseDir):
     import os
 
     for root, dir, files in os.walk(baseDir):
@@ -224,13 +254,17 @@ def test(baseDir):
     # plt.show()
 
 
-def bruteForce(baseDir, name):
+def fullScan(baseDir, name, plotDirName):
     import os
     import numpy as np
     import subprocess
 
-    saveDir = os.path.join(baseDir, 'plots')
-    os.makedirs(saveDir)
+    saveDir = os.path.join(baseDir, plotDirName)
+    try:
+        os.makedirs(saveDir)
+    except FileExistsError:
+        print('Directory <{}> already exists. Please use a different name.'.format(plotDirName))
+        exit(2)
 
     cwd = os.getcwd()
     os.chdir(baseDir)
@@ -274,6 +308,8 @@ def bruteForce(baseDir, name):
         log = XDSIntegrateLog(fileName, overrideTitle='OSCILLATION_RANGE = {:6.4f}'.format(baseValue + offset), savePlotsTo=saveDir, fileNameCallback=report.addFit)
         try:
             log.read()
+            log.fitOscillationCorrection()
+            log.plot(show=False)
         except FileNotFoundError:
             print('Not stable')
         except TypeError:
@@ -293,20 +329,21 @@ def bruteForce(baseDir, name):
 
                 ioversH.append(allIovers.pop())
                 ioversL.append(allIovers.pop(0))
+
     with open(os.path.join(baseDir, 'XDS.INP'), 'w') as fp:
         lines[baseLine[0]] = baseLine[1]
         fp.write(''.join(lines))
 
-    plt.plot(values, comps, label='Overall Completeness')
-    plt.plot(values, compsH, label='Completeness in highest resolution shell')
-    plt.plot(values, compsL, label='Completeness in lowest resolution shell')
-    plt.title('Completeness Versus Oscillation Range')
-    plt.xlabel('Oscillation Range in degrees')
-    plt.ylabel('Completeness')
-    plt.legend(loc=3)
-    plt.savefig(os.path.join(saveDir, 'completeness.eps'))
-    plt.show()
-    report.setCompletenessFigure('completeness.eps')
+    # plt.plot(values, comps, label='Overall Completeness')
+    # plt.plot(values, compsH, label='Completeness in highest resolution shell')
+    # plt.plot(values, compsL, label='Completeness in lowest resolution shell')
+    # plt.title('Completeness Versus Oscillation Range')
+    # plt.xlabel('Oscillation Range in degrees')
+    # plt.ylabel('Completeness')
+    # plt.legend(loc=3)
+    # plt.savefig(os.path.join(saveDir, 'completeness.eps'))
+    # plt.show()
+    # report.setCompletenessFigure('completeness.eps')
 
     plt.plot(values, iovers, label='Overall I/Sigma')
     plt.plot(values, ioversH, label='I/Sigma in highest resolution shell')
@@ -316,13 +353,13 @@ def bruteForce(baseDir, name):
     plt.ylabel('I/Sigma')
     plt.legend(loc=3)
     plt.savefig(os.path.join(saveDir, 'iOverSigma.eps'))
-    plt.show()
+    # plt.show()
     report.setIOverSigmaFigure('iOverSigma.eps')
 
 
 
 
-    report.report()
+    report.report(plotDirName)
     os.chdir(cwd)
 
 
@@ -353,11 +390,225 @@ def getCompletenessAndIoverSigma(baseDir):
     return comp, IoverSigma, completeness, IoverSigmas
 
 
+import numpy as np
+
+def get_quaternion(lst1, lst2, matchlist):
+    """
+    Returns the quaternion representing the best possible
+    transformation to minimize the distance between all
+    points in 'cloud1' and 'cloud2'.
+    The second return value is the fitting criteria
+    representing how well both clouds match.
+    (the larger the value the better.)
+    """
+    M = np.matrix([[0, 0, 0], [0, 0, 0], [0, 0, 0]])
+
+    for i, coord1 in enumerate(lst1):
+        x = np.matrix(np.outer(coord1, lst2[matchlist[i]]))
+        M = M + x
+
+    N11 = float(M[0][:, 0] + M[1][:, 1] + M[2][:, 2])
+    N22 = float(M[0][:, 0] - M[1][:, 1] - M[2][:, 2])
+    N33 = float(-M[0][:, 0] + M[1][:, 1] - M[2][:, 2])
+    N44 = float(-M[0][:, 0] - M[1][:, 1] + M[2][:, 2])
+    N12 = float(M[1][:, 2] - M[2][:, 1])
+    N13 = float(M[2][:, 0] - M[0][:, 2])
+    N14 = float(M[0][:, 1] - M[1][:, 0])
+    N21 = float(N12)
+    N23 = float(M[0][:, 1] + M[1][:, 0])
+    N24 = float(M[2][:, 0] + M[0][:, 2])
+    N31 = float(N13)
+    N32 = float(N23)
+    N34 = float(M[1][:, 2] + M[2][:, 1])
+    N41 = float(N14)
+    N42 = float(N24)
+    N43 = float(N34)
+
+    N = np.matrix([[N11, N12, N13, N14],
+                   [N21, N22, N23, N24],
+                   [N31, N32, N33, N34],
+                   [N41, N42, N43, N44]])
+
+    values, vectors = np.linalg.eig(N)
+    w = list(values)
+    mw = max(w)
+    quat = vectors[:, w.index(mw)]
+    quat = np.array(quat).reshape(-1, ).tolist()
+    return quat, mw
+
+def rotate_by_quaternion(cloud, quat):
+    """
+    Rotations the points in 'cloud' with the
+    transformation represented by the quaternion
+    'quat'.
+    """
+    rotmat = get_rotation_matrix_from_quaternion(quat)
+    return rotate_by_matrix(list(cloud), rotmat)
+
+def rotate_by_matrix(cloud, rotmat):
+    """
+    Rotates the points in 'cloud' by the transformation represented
+    by the rotation matrix 'rotmat'.
+    """
+    return [np.array(np.dot(coord, rotmat).tolist())[0] for coord in cloud]
+
+def get_rotation_matrix_from_quaternion(q):
+    """
+    Returns the rotation matrix equivalent of the given quaternion.
+
+    This function is used by the get_refined_rotation() function.
+    """
+    R = np.matrix([[q[0] * q[0] + q[1] * q[1] - q[2] * q[2] - q[3] * q[3],
+                    2 * (q[1] * q[2] - q[0] * q[3]),
+                    2 * (q[1] * q[3] + q[0] * q[2])],
+                   [2 * (q[2] * q[1] + q[0] * q[3]),
+                    q[0] * q[0] - q[1] * q[1] + q[2] * q[2] - q[3] * q[3],
+                    2 * (q[2] * q[3] - q[0] * q[1])],
+                   [2 * (q[3] * q[1] - q[0] * q[2]),
+                    2 * (q[3] * q[2] + q[0] * q[1]),
+                    q[0] * q[0] - q[1] * q[1] - q[2] * q[2] + q[3] * q[3]]])
+    return R
+
+def get_transform(points1, points2, matchlist=None, use=3, matrix=False):
+    """
+    Returns the Quaternion/Matrix representation of
+    of the transformation that transforms the points in
+    'points1' to the coordinate system of 'points2'.
+
+    The first three points in each list are used by default.
+    It is assumed that the first point in list 1 matches
+    the first point in list 2 and so forth...
+    This behavior can be modified by using the 'matchlist'
+    option that must be a list of integers specifying
+    which points to map. 'matchlist=[2,1,0]' implies that
+    the first element of 'points1' is mapped to the third
+    element of 'points2' and so forth.
+
+    The optional argument 'use' determines how many elements
+    of the point lists should be used to determine the
+    transformation. The default is three. A value of '0'
+    implies the use of all elements.
+
+    The boolean 'matrix' determines whether the
+    transformation is returned in quaternion
+    representation or in matrix representation.
+    """
+    if use == 0:
+        use = len(points1)
+    lst1 = points1[:use]
+    lst2 = points2[:use]
+    if not matchlist:
+        matchlist = range(use)
+    quat, _ = get_quaternion(lst1, lst2, matchlist)
+    if not matrix:
+        return quat
+    else:
+        return get_rotation_matrix_from_quaternion(quat)
+
+
+
+import math
+def quaternion_to_euler_angles(q):
+    q0, q1, q2, q3 = q
+    phi = np.arctan((2*(q0*q1 + q2*q3))/(1-2*(q1*q1 + q2*q2)))
+    theta = np.arcsin(2*(q0*q2 - q3*q1))
+    psi = np.arctan((2*(q0*q3 + q1*q2)) / (1-2*(q2*q2 + q3*q3)))
+
+    phi = math.degrees(phi)
+    theta = math.degrees(theta)
+    psi = math.degrees(psi)
+    return (phi, theta, psi)
+
+
+
+
+
+
+rx90 = np.matrix(((1, 0, 0),
+                  (0, 0, -1),
+                  (0, 1, 0)))
+
+ry90 = np.matrix(((0, 0, 1),
+                  (0, 1, 0),
+                  (-1, 0, 0)))
+
+def find_orthonormals(vector):
+    normal = vector/np.linalg.norm(vector)
+    w = np.dot(normal, rx90).flatten().tolist()[0]
+    d = np.dot(normal, w)
+    if abs(d) > .6:
+        w = np.dot(normal, ry90).flatten().tolist()[0]
+    w = w/np.linalg.norm(w)
+    onorm1 = np.cross(normal, w)
+    onorm1 = onorm1 / np.linalg.norm(onorm1)
+
+    onorm2 = np.cross(normal, onorm1)
+    onorm2 = onorm2 / np.linalg.norm(onorm2)
+    return onorm1, onorm2
+
+def quaternion_twist(quat, axis, onorm):
+    rotmat = get_rotation_matrix_from_quaternion(quat)
+    transformed = np.array(np.dot(onorm, rotmat).tolist())[0]
+
+    flattened = transformed - (np.dot(transformed, axis) * axis)
+    flattened = flattened / np.linalg.norm(flattened)
+
+    handedness = np.cross(onorm, flattened)
+    # handedness = np.cross( flattened,onorm)
+    handedness = handedness/np.linalg.norm(handedness)
+    handedness = np.dot(handedness, axis)
+    return math.degrees(np.arccos(np.dot(onorm, flattened)))*handedness
+
+
+def quaternion_to_axis_angle(quat):
+    v = quat[1:]
+    return v/np.linalg.norm(v), math.degrees(2 *np.arccos(quat[0]))
+
+
+def main():
+    parser = argparse.ArgumentParser(description='Determine empirical correction factor for OSCILLATION_WITH parameter '
+                                                 'in XDS integrations.')
+    parser.add_argument('--path', '-p', type=str, default='./',
+                        help="path to the directory containing the XDS.INP/INTEGRATE.LP/CORRECT.LP files.")
+    parser.add_argument('--plot', '-P', action='store_true',
+                        help='show a plot of the rotational offset.')
+    parser.add_argument('--save', '-s', type=str, default='',
+                        help="write plot to disk using the file name <SAVE>. Image file format is inferred from file"
+                             " name.",)
+    parser.add_argument('--scan', type=str, default='',
+                        help='scan OSCILLATION_RANGE values around the the reported value by continuously calling '
+                             'xds_par. This option might be useful if the data is particularly noisy or very finely '
+                             'sliced. A directory named <SCAN> is created containing all generated plots as well as '
+                             'a report.tex file that can be used to generate a diagnostic report via Latex.')
+    parser.add_argument('--title', '-t', type=str, default='XDS_DataSet',
+                        help='title used in the diagnostic report generated if the scan option is selected.')
+    parser.add_argument('--raw', '-r', type=str, default='plotData.txt',
+                        help='write the CSV file <RAW> containing the data to reproduce the plots.')
+    args = parser.parse_args()
+    if args.scan:
+        fullScan(args.path, args.title, args.scan)
+        return
+    log = XDSIntegrateLog(os.path.join(args.path, 'INTEGRATE.LP'), savePlotsAs=args.save)
+    log.read()
+    m = log.fitOscillationCorrection()
+    print('Old OSCILLATION_RANGE= {:6.4f}'.format(log.oscillationRange))
+    print('Use OSCILLATION_RANGE= {:6.4f}'.format(log.oscillationRange + m))
+    if args.plot or args.save:
+        log.plot(show=args.plot)
+
+
+
 if __name__ == '__main__':
-    test('/home/jens/tg/OscillationWidth/')
+    main()
+    exit()
+    # test('/home/jens/tg/OscillationWidth/')
+    # bruteForce('/home/jens/tg/OscillationWidth/ir7b_pos14_x1/pos14_x1/id13', 'ir7b_id13')
+    # bruteForce('/home/jens/tg/OscillationWidth/ir7b_pos14_x1/pos14_x1/id14', 'ir7b_id14')
+    # bruteForce('/home/jens/tg/OscillationWidth/sil1_boxE2_x15_42/boxE2/x15_42', 'sil1_x15_42')
     # bruteForce('/home/jens/tg/OscillationWidth/brute/ir7b_pos14_x1/pos14_x1/id14', 'ir7b_id14')
-    # print(getCompletenessAndIoverSigma('/home/jens/tg/OscillationWidth/brute/ir7b_pos14_x1/pos14_x1/id13'))
+    # print(getCompletenessAndIoverSigma('/home/jens/tg/OscillationWidth/brute/ir7b
+    # _pos14_x1/pos14_x1/id13'))
     # exit()
     # bruteForce('/home/jens/tg/OscillationWidth/brute/ir7b_pos14_x1/pos14_x1/id13', 'ir7b_id13')
-    # bruteForce('/home/jens/tg/OscillationWidth/brute/sil1_x05_17/x05_17', 'sil1_x05_17')
+    fullScan('/home/jens/tg/OscillationWidth/brute/sil1_x05_17/x05_17', 'sil1_x05_17')
     # test('/home/jens/tg/data/bkp/data/')
