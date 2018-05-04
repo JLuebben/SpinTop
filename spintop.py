@@ -125,6 +125,10 @@ class XDSIntegrateLog(object):
 
                     currentBlock += 1
                     if currentBlock > 0:
+                        if a is None:
+                            print('No orientation data found in INTEGRATE block. Make sure that orientation\n'
+                                  'refinement is activated in XDS.INP.')
+                            exit(3)
                         block = XDSIntegrateBlock(currentBlock-1, a, b, c, self.rotationAxis)
                         self.blocks.append(block)
                     a = None
@@ -138,6 +142,10 @@ class XDSIntegrateLog(object):
                     b = np.array([float(word) for word in line.split()[-3:] if word])
                 if line.startswith('COORDINATES OF UNIT CELL C-AXIS'):
                     c = np.array([float(word) for word in line.split()[-3:] if word])
+            if a is None:
+                print('No orientation data found in INTEGRATE block. Make sure that orientation\n'
+                      'refinement is activated in XDS.INP.')
+                exit(3)
             block = XDSIntegrateBlock(currentBlock, a, b, c, self.rotationAxis)
             self.blocks.append(block)
 
