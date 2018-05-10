@@ -291,7 +291,6 @@ def fullScan(baseDir, name, plotDirName):
     compsL, ioversL = [], []
     values = []
     for offset in np.arange(-0.002, 0.003, 0.0001, float):
-        offset = 0
         try:
             os.remove(os.path.join(baseDir, 'INTEGRATE.LP'))
         except FileNotFoundError:
