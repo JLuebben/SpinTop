@@ -101,6 +101,9 @@ class XDSIntegrateLog(object):
 
     def read(self):
         currentBlock = -1
+        if not os.path.isfile(self.fileName):
+            print('File not found: {}'.format(self.fileName))
+            exit(1)
         with open(self.fileName, 'r') as fp:
             for line in fp.readlines():
                 line = line.strip()
@@ -209,9 +212,9 @@ class XDSIntegrateLog(object):
         if not self.plotData:
             raise ValueError('Plot data is None. Call "fitOscillationCorrection()" before calling "writeRawData".')
         with open(fileName, 'w') as fp:
-            fp.write('Angle, Twist, CorrectedTwist')
+            fp.write('Angle, Twist, CorrectedTwist\n')
             for angle, twist, corrected in zip(self.plotData['angles'], self.plotData['twists'], self.plotData['correctedTwists']):
-                fp.write('{},{},{}'.format(angle, twist, corrected))
+                fp.write('{},{},{}\n'.format(angle, twist, corrected))
 
 
 
@@ -288,6 +291,7 @@ def fullScan(baseDir, name, plotDirName):
     compsL, ioversL = [], []
     values = []
     for offset in np.arange(-0.002, 0.003, 0.0001, float):
+        offset = 0
         try:
             os.remove(os.path.join(baseDir, 'INTEGRATE.LP'))
         except FileNotFoundError:
@@ -337,6 +341,7 @@ def fullScan(baseDir, name, plotDirName):
 
                 ioversH.append(allIovers.pop())
                 ioversL.append(allIovers.pop(0))
+        break
 
     with open(os.path.join(baseDir, 'XDS.INP'), 'w') as fp:
         lines[baseLine[0]] = baseLine[1]
@@ -577,7 +582,11 @@ def main():
     parser = argparse.ArgumentParser(description='Determine empirical correction factor for OSCILLATION_WITH parameter '
                                                  'in XDS integrations.')
     parser.add_argument('--path', '-p', type=str, default='./',
-                        help="path to the directory containing the XDS.INP/INTEGRATE.LP/CORRECT.LP files.")
+                        help="path to the directory containing the XDS.INP/INTEGRATE.LP/CORRECT.LP files.\n"
+                             "If <PATH> ends with '/*', the directory is scanned for subdirectories containing"
+                             " INTEGRATE.LP files and the optimal OSCILLATION_RANGE value for each of them"
+                             " is determined. Finally, the average value is determined and printed for each starting"
+                             " value.")
     parser.add_argument('--plot', '-P', action='store_true',
                         help='show a plot of the rotational offset.')
     parser.add_argument('--save', '-s', type=str, default='',
@@ -592,9 +601,23 @@ def main():
                         help='title used in the diagnostic report generated if the scan option is selected.')
     parser.add_argument('--raw', '-r', type=str, default='plotData.txt',
                         help='write the CSV file <RAW> containing the data to reproduce the plots.')
+    parser.add_argument('--reintegrate', type=str, default='',
+                        help='check the given directory for subdirectories containing XDS.INP files. xds_par is called'
+                             ' in each of these directories.')
     args = parser.parse_args()
+    if args.reintegrate:
+        mask = args.reintegrate
+        if mask.endswith('/'):
+            mask += '*'
+        elif not mask.endswith('/*'):
+            mask += '/*'
+        reIntegrateAll(mask)
+        return
     if args.scan:
         fullScan(args.path, args.title, args.scan)
+        return
+    if args.path.endswith('/*'):
+        scanDir(args.path)
         return
     log = XDSIntegrateLog(os.path.join(args.path, 'INTEGRATE.LP'), savePlotsAs=args.save)
     log.read()
@@ -603,10 +626,65 @@ def main():
     print('Use OSCILLATION_RANGE= {:6.4f}'.format(log.oscillationRange + m))
     if args.plot or args.save:
         log.plot(show=args.plot)
+    if args.raw:
+        log.writeRawData(args.raw)
 
+
+def scanDir(mask):
+    import glob
+    reportedValues = {}
+    for path in sorted(glob.glob(mask)):
+        files = glob.glob(path+'/*')
+        if any(['INTEGRATE.LP' in fileName for fileName in files]):
+            print(path.split('/')[-1])
+            log = XDSIntegrateLog(os.path.join(path, 'INTEGRATE.LP'),)
+            log.read()
+            m = log.fitOscillationCorrection()
+            print('  Old OSCILLATION_RANGE= {:6.4f}'.format(log.oscillationRange))
+            print('  Use OSCILLATION_RANGE= {:6.4f}'.format(log.oscillationRange + m))
+            value = '{:6.4f}'.format(log.oscillationRange)
+            target = log.oscillationRange+m
+            try:
+                reportedValues[value].append(target)
+            except KeyError:
+                reportedValues[value] = [target,]
+            log.plot(show=True)
+    print()
+    for key, value in reportedValues.items():
+        print('Reported Value: {}   --->    Recommended Value: {:6.4f} +- {:6.4f} based on {:2} values'.format(key, np.mean(value), np.std(value), len(value)))
+
+
+def reIntegrateAll(mask):
+    import glob
+    import subprocess
+    cwd = os.getcwd()
+    devnull = open(os.devnull, 'w')
+    for path in sorted(glob.glob(mask)):
+        files = glob.glob(path + '/*')
+        if any(['XDS.INP' in fileName for fileName in files]):
+            print('Reintegrating {}'.format(path))
+            os.chdir(path)
+            subprocess.call(['xds_par'], stdout=devnull)
+            # print(os.getcwd())
+    os.chdir(cwd)
+
+def fullScanAll(mask):
+    import glob
+    for path in sorted(glob.glob(mask)):
+        files = glob.glob(path + '/*')
+        if 'id09' in path:
+            continue
+        print(path)
+        if any(['XDS.INP' in fileName for fileName in files]):
+            fullScan(path, path.split('/')[-1], 'allPlots3')
 
 
 if __name__ == '__main__':
+    # reIntegrateAll('/home/jens/tg/OscillationWidth/ir7b_pos14_x1/pos14_x1/*')
+    # fullScanAll('/home/jens/tg/OscillationWidth/ir7b_pos14_x1/pos14_x1/*')
+
+    # scanDir('/home/jens/tg/OscillationWidth/ir7b_pos14_x1/pos14_x1/*')
+    # exit()
     main()
     exit()
     # test('/home/jens/tg/OscillationWidth/')
