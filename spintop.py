@@ -1,6 +1,12 @@
 import os
 import argparse
 try:
+    import numpy as np
+except ImportError:
+    print('SpinTop requires Numpy. Please install Numpy.'
+          '\nFor example via "pip install numpy"')
+    exit(1)
+try:
     from matplotlib import pyplot as plt
 except ImportError:
     PLOTAVAILABLE = False
@@ -167,7 +173,11 @@ class XDSIntegrateLog(object):
             frameNumbers.append(frameNumber)
             angles.append(self.oscillationRange*frameNumber)
         A = np.vstack([angles, np.ones(len(angles))]).T
-        m, b = np.linalg.lstsq(A, twists, rcond=None)[0]
+        try:
+            m, b = np.linalg.lstsq(A, twists, rcond=None)[0]
+        except TypeError:
+            # Older numpy versions don't understand the rcond argument
+            m, b = np.linalg.lstsq(A, twists)[0]
         x = angles
         y = [i*m+b for i in x]
         m = m * self.oscillationRange
@@ -402,7 +412,7 @@ def getCompletenessAndIoverSigma(baseDir):
     return comp, IoverSigma, completeness, IoverSigmas
 
 
-import numpy as np
+
 
 def get_quaternion(lst1, lst2, matchlist):
     """
@@ -603,7 +613,13 @@ def main():
     parser.add_argument('--reintegrate', type=str, default='',
                         help='check the given directory for subdirectories containing XDS.INP files. xds_par is called'
                              ' in each of these directories.')
+    
     args = parser.parse_args()
+    if not PLOTAVAILABLE:
+        if args.plot or args.save or args.scan:
+            print('No matplotlib instalation found.\nPlease install matplotlib (pip install matplotlib) to use\n'
+                  'plotting features.')
+            exit(1)
     if args.reintegrate:
         mask = args.reintegrate
         if mask.endswith('/'):
@@ -647,7 +663,7 @@ def scanDir(mask):
                 reportedValues[value].append(target)
             except KeyError:
                 reportedValues[value] = [target,]
-            log.plot(show=True)
+            log.plot(show=False)
     print()
     for key, value in reportedValues.items():
         print('Reported Value: {}   --->    Recommended Value: {:6.4f} +- {:6.4f} based on {:2} values'.format(key, np.mean(value), np.std(value), len(value)))
@@ -665,35 +681,36 @@ def reIntegrateAll(mask):
             os.chdir(path)
             subprocess.call(['xds_par'], stdout=devnull)
             # print(os.getcwd())
+            os.chdir(cwd)
     os.chdir(cwd)
 
 def fullScanAll(mask):
     import glob
     for path in sorted(glob.glob(mask)):
         files = glob.glob(path + '/*')
-        if 'id09' in path:
-            continue
         print(path)
         if any(['XDS.INP' in fileName for fileName in files]):
             fullScan(path, path.split('/')[-1], 'allPlots3')
 
+def scanCellConstants(mask):
+    import glob
+    cells = []
+    for path in sorted(glob.glob(mask)):
+        files = glob.glob(path + '/*')
+        cellLine = None
+        if any(['CORRECT.LP' in fileName for fileName in files]):
+            with open(os.path.join(path, 'CORRECT.LP')) as fp:
+                for line in fp.readlines():
+                    if 'UNIT_CELL_CONSTANTS=' in line:
+                        cellLine = line
+        if cellLine:
+            cell = [float(x) for x in cellLine.strip().split()[1:] if x]
+            cells.append(cell)
+    print('Mean Cell Parameters:                  ', np.mean(cells,0))
+    print('Standard Deviations of Cell Parameters:', np.std(cells,0))
+
+
 
 if __name__ == '__main__':
-    # reIntegrateAll('/home/jens/tg/OscillationWidth/ir7b_pos14_x1/pos14_x1/*')
-    # fullScanAll('/home/jens/tg/OscillationWidth/ir7b_pos14_x1/pos14_x1/*')
-
-    # scanDir('/home/jens/tg/OscillationWidth/ir7b_pos14_x1/pos14_x1/*')
-    # exit()
     main()
     exit()
-    # test('/home/jens/tg/OscillationWidth/')
-    # bruteForce('/home/jens/tg/OscillationWidth/ir7b_pos14_x1/pos14_x1/id13', 'ir7b_id13')
-    # bruteForce('/home/jens/tg/OscillationWidth/ir7b_pos14_x1/pos14_x1/id14', 'ir7b_id14')
-    # bruteForce('/home/jens/tg/OscillationWidth/sil1_boxE2_x15_42/boxE2/x15_42', 'sil1_x15_42')
-    # bruteForce('/home/jens/tg/OscillationWidth/brute/ir7b_pos14_x1/pos14_x1/id14', 'ir7b_id14')
-    # print(getCompletenessAndIoverSigma('/home/jens/tg/OscillationWidth/brute/ir7b
-    # _pos14_x1/pos14_x1/id13'))
-    # exit()
-    # bruteForce('/home/jens/tg/OscillationWidth/brute/ir7b_pos14_x1/pos14_x1/id13', 'ir7b_id13')
-    fullScan('/home/jens/tg/OscillationWidth/brute/sil1_x05_17/x05_17', 'sil1_x05_17')
-    # test('/home/jens/tg/data/bkp/data/')
